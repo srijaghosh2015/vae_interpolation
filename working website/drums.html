@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Music Grid</title>
+  <a href="restart_playback.html" class="button">Switch to Cell Restart Playback</a>
+  <script src="https://cdn.jsdelivr.net/npm/@magenta/music@^1.0.0"></script>
+  <style>
+    body {
+      margin: 20px;
+      font-family: Arial, sans-serif;
+    }
+
+    .music-grid {
+      display: grid;
+      grid-template-columns: repeat(var(--grid-size), 60px);
+      grid-template-rows: repeat(var(--grid-size), 60px);
+      margin: 20px 0;
+      position: relative;
+    }
+
+    .grid-cell {
+      border: 1px solid #ccc;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+    }
+
+    .cursor {
+      position: absolute;
+      pointer-events: none;
+      transform: translate(-50%, -50%)
+    }
+
+    #pianoRoll {
+      border: 1px solid #ccc;
+      margin: 10px 0;
+      width: 600px !important;
+      height: 120px !important;
+      max-width: 600px;
+      max-height: 120px;
+      min-width: 600px;
+      min-height: 120px;
+    }
+
+    input[type="file"] {
+      margin: 10px 0;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Music Grid</h1>
+  <div id="status">Loading...</div>
+
+  <input type="file" id="fileInput" accept=".json">
+
+
+  <canvas id="pianoRoll" width="600" height="120"></canvas>
+
+  <div class="music-grid" id="musicGrid">
+    <div class="cursor" id="cursor"></div>
+  </div>
+
+  <script>
+    setTimeout(() => {
+      if (typeof mm === 'undefined') {
+        document.getElementById('status').textContent = "Magenta.js failed to load";
+        return;
+      }
+      else {
+        document.getElementById('status').textContent = 'Magenta.js loaded!';
+        initializeGrid();
+      }
+    }, 2000)
+
+
+    function initializeGrid() {
+      let gridData = null;
+      let currentPlayer = null;
+      let soundFontPlayer = new mm.SoundFontPlayer('https://storage.googleapis.com/magentadata/js/soundfonts/sgm_plus');
+      let viz = null;
+      let lastCell = null;
+      let gridSize = 6;
+
+
+      // timing variable
+      let currentTime = 0;
+      let startTime = 0;
+      let isActive = false;
+      let animationId = null;
+
+      const grid = document.getElementById('musicGrid');
+      let cursor = document.getElementById('cursor');
+      const fileInput = document.getElementById('fileInput');
+
+
+      function animateCell() {
+        if (!isActive) {
+          return;
+        }
+        // how many seconds have elapsed since entering the grid 
+        currentTime = (performance.now() - startTime) / 1000;
+        updatePianoRollHighlight();
+        animationId = requestAnimationFrame(animateCell);
+      }
+
+      function updatePianoRollHighlight() {
+        if (!gridData || !lastCell || !viz) {
+          return;
+        }
+        const cellData = gridData.cells[lastCell];
+        // total_time i shte duration of the musical sequence in the musical cell
+        const sequenceLength = cellData.total_time;
+
+        // currentTime is the amount of time in the grid
+        const wrappedTime = currentTime % sequenceLength;
+
+        // notes playing at the current time
+        const playingNotes = cellData.notes.filter(note => {
+          return note.start_time <= wrappedTime && note.end_time > wrappedTime;
+        })
+
+        if (playingNotes.length > 0) {
+          playingNotes.forEach(note => {
+            const highlightNote = {
+              pitch: note.pitch,
+              startTime: wrappedTime,
+              endTime: wrappedTime + 0.15,
+              velocity: note.velocity || 80
+            };
+            viz.redraw(highlightNote);
+          });
+        }
+
+      }
+
+
+
+
+      function rebuildGrid() {
+        // Clear existing cells but keep cursor
+        grid.innerHTML = '<div class="cursor" id="cursor"></div>';
+
+        // Update CSS grid size
+        grid.style.setProperty('--grid-size', gridSize);
+        for (let row = 0; row < gridSize; row++) {
+          for (let col = 0; col < gridSize; col++) {
+            const cell = document.createElement('div');
+            cell.className = 'grid-cell'
+            cell.dataset.row = row;
+            cell.dataset.col = col;
+            cell.textContent = `${row}, ${col}`
+            grid.appendChild(cell)
+          }
+        }
+
+        cursor = document.getElementById("cursor");
+      }
+      grid.addEventListener("mousemove", (e) => {
+        const rect = grid.getBoundingClientRect()
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        cursor.style.left = x + 'px';
+        cursor.style.top = y + 'px';
+
+        // each cell is 60 px wide and 60 px tall
+        const cellCol = Math.floor(x / 60);
+        const cellRow = Math.floor(y / 60);
+
+
+        // TODO: make sure that we replace the 5
+        if (cellCol >= 0 && cellCol < gridSize && cellRow >= 0 && cellRow < gridSize) {
+
+
+          if (!isActive) {
+            isActive = true;
+            startTime = performance.now();
+            currentTime = 0;
+            animateCell()
+          }
+          updateActiveCell(cellRow, cellCol);
+        }
+
+      });
+
+      function updateActiveCell(row, col) {
+        // clear all highlighting first
+        document.querySelectorAll('.grid-cell').forEach(cell => {
+          cell.classList.remove('active')
+        })
+
+        // add highlighting to current cell
+        const currentCell = document.querySelector(`[data-row="${row}"][data-col="${col}"]`);
+        if (currentCell) {
+          currentCell.classList.add('active')
+        }
+
+        const cellKey = `${row},${col}`;
+        // gridData must exist, and the current cellKey must be different (prevents the music from being played over and over again on the same cell)
+        if (gridData && lastCell !== cellKey) {
+          playCell(row, col);
+          lastCell = cellKey;
+        }
+
+      }
+
+      function playCell(row, col) {
+        const cellKey = `${row},${col}`;
+        const cellData = gridData.cells[cellKey]
+        if (!cellData) {
+          return;
+        }
+        if (currentPlayer) {
+          currentPlayer.stop();
+        }
+
+
+        const cellSequenceLength = cellData.total_time;
+        const currentTimeInSequence = currentTime % cellSequenceLength;
+
+        const adjustedNotes = cellData.notes
+          .filter(note => note.end_time > currentTimeInSequence)
+          .map(note => ({
+            pitch: note.pitch,
+            startTime: Math.max(0, note.start_time - currentTimeInSequence),
+            endTime: note.end_time - currentTimeInSequence,
+            velocity: note.velocity || 80,
+            instrument: 9, // ADD THIS LINE
+            isDrum: true   // ADD THIS LINE
+          }))
+
+        if (adjustedNotes.length == 0) return;
+
+        const audioSequence = {
+          notes: adjustedNotes,
+          totalTime: Math.max(0.1, cellSequenceLength - currentTimeInSequence)
+        }
+
+        const visualSequence = {
+          notes: cellData.notes.map(note => ({
+            pitch: note.pitch,
+            startTime: note.start_time,
+            endTime: note.end_time,
+            velocity: note.velocity || 80
+          })),
+          totalTime: cellData.total_time
+        };
+
+        const canvas = document.getElementById('pianoRoll');
+        canvas.width = 600;
+        canvas.height = 120;
+        canvas.style.width = '600px';
+        canvas.style.height = '120px';
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, 600, 120);
+        viz = new mm.PianoRollCanvasVisualizer(visualSequence, canvas);
+
+
+        currentPlayer = new mm.Player(false, {
+          stop: () => {
+            if (lastCell == cellKey && isActive) {
+              setTimeout(() => {
+                if (lastCell == cellKey && isActive) {
+                  playCell(row, col);
+                }
+              }, 100)
+            }
+          }
+        });
+
+
+
+        currentPlayer.start(audioSequence);
+      }
+
+      //file loading
+
+      fileInput.addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            gridData = JSON.parse(e.target.result);
+            gridSize = gridData.dimensions || 6;
+            rebuildGrid();
+            document.getElementById('status').textContent = 'Grid data loaded successfully';
+            console.log('Grid data loaded:', gridData);
+          } catch (error) {
+            document.getElementById('status').textContent = 'Error loading file: ' + error.message;
+          }
+        };
+        reader.readAsText(file);
+      });
+
+      grid.addEventListener('mouseleave', () => {
+        isActive = false;
+        if (currentPlayer) {
+          currentPlayer.stop();
+        }
+        lastCell = null;
+        document.querySelectorAll('.grid-cell').forEach(cell => {
+          cell.classList.remove('active');
+        })
+      })
+
+      rebuildGrid();
+    }
+
+
+  </script>
+
+</body>
+
+</html>
